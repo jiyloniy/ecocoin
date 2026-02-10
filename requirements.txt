@@ -1,0 +1,8 @@
+opencv-python
+numpy
+pillow
+qrcode
+torch
+torchvision
+ultralytics
+PyQt6
