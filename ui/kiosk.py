@@ -7,6 +7,7 @@ import cv2
 import io
 import uuid
 import random
+import math as _math
 import numpy as np
 import logging
 from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, QPropertyAnimation, QEasingCurve, QPoint
@@ -118,22 +119,50 @@ class CameraWidget(QLabel):
         p.end()
 
 
+class _FlyingCoin:
+    """Uchib ketuvchi kichik coin."""
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.vx = random.uniform(-4, 4)
+        self.vy = random.uniform(-7, -2)
+        self.size = random.uniform(18, 35)
+        self.life = 1.0
+        self.decay = random.uniform(0.008, 0.018)
+        self.rot = random.uniform(0, 360)
+        self.rot_speed = random.uniform(-4, 4)
+        self.glow_phase = random.uniform(0, _math.pi * 2)
+
+    def update(self):
+        self.x += self.vx
+        self.y += self.vy
+        self.vy += 0.12
+        self.life -= self.decay
+        self.rot += self.rot_speed
+        self.glow_phase += 0.1
+
+    def is_alive(self):
+        return self.life > 0
+
+
 class CoinDisplayWidget(QWidget):
-    """Katta coin ko'rsatish — o'rtada paydo bo'lib yo'qoladi."""
+    """Coin berish animatsiyasi — pastda yashil gradient bar + uchuvchi coinlar."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._visible = False
         self._phase = 0.0
-        self._coin_text = "+5 🪙"
+        self._amount = 5
         self._waste_text = ""
         self._opacity = 0.0
         self._scale = 0.3
+        self._flying_coins = []
+        self._golden_glow_phase = 0.0
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._animate)
-        self._timer.start(30)
+        self._timer.start(25)
 
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
@@ -144,12 +173,21 @@ class CoinDisplayWidget(QWidget):
     def show_coin(self, waste_name: str, amount: int = 5):
         self._visible = True
         self._hiding = False
-        self._coin_text = f"+{amount}"
+        self._amount = amount
         self._waste_text = waste_name
         self._opacity = 0.0
         self._scale = 0.3
         self._phase = 0.0
-        self._hide_timer.start(2500)
+        self._golden_glow_phase = 0.0
+
+        # Uchuvchi coinlar yaratish
+        self._flying_coins = []
+        for _ in range(12):
+            fx = random.uniform(-60, 60)
+            fy = random.uniform(-40, 20)
+            self._flying_coins.append(_FlyingCoin(fx, fy))
+
+        self._hide_timer.start(3500)
 
     def _start_hide(self):
         self._hiding = True
@@ -158,18 +196,64 @@ class CoinDisplayWidget(QWidget):
         if not self._visible:
             return
 
-        self._phase += 0.08
+        self._phase += 0.06
+        self._golden_glow_phase += 0.08
 
         if self._hiding:
-            self._opacity = max(0, self._opacity - 0.04)
-            self._scale *= 0.98
+            self._opacity = max(0, self._opacity - 0.035)
+            self._scale = max(0.8, self._scale - 0.01)
             if self._opacity <= 0:
                 self._visible = False
         else:
-            self._opacity = min(1.0, self._opacity + 0.06)
-            self._scale = min(1.0, self._scale + 0.04)
+            self._opacity = min(1.0, self._opacity + 0.05)
+            self._scale = min(1.0, self._scale + 0.03)
+
+        for fc in self._flying_coins:
+            fc.update()
+        self._flying_coins = [c for c in self._flying_coins if c.is_alive()]
 
         self.update()
+
+    def _draw_coin(self, p: QPainter, cx: float, cy: float, sz: float, alpha: int):
+        """3D coin chizish."""
+        # Glow
+        glow_g = QRadialGradient(QPointF(cx, cy), sz * 2.2)
+        glow_g.setColorAt(0, QColor(255, 215, 0, alpha // 3))
+        glow_g.setColorAt(1, QColor(255, 215, 0, 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(glow_g))
+        p.drawEllipse(QPointF(cx, cy), sz * 2.2, sz * 2.2)
+
+        # Coin body
+        cg = QRadialGradient(QPointF(cx - sz * 0.15, cy - sz * 0.2), sz * 1.3)
+        cg.setColorAt(0, QColor(255, 245, 140, alpha))
+        cg.setColorAt(0.4, QColor(255, 215, 0, alpha))
+        cg.setColorAt(0.8, QColor(220, 170, 0, alpha))
+        cg.setColorAt(1, QColor(180, 130, 0, alpha))
+        p.setBrush(QBrush(cg))
+        p.setPen(QPen(QColor(180, 130, 0, alpha), 2))
+        p.drawEllipse(QPointF(cx, cy), sz, sz)
+
+        # Inner ring
+        p.setPen(QPen(QColor(200, 160, 0, alpha // 2), 1.5))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(cx, cy), sz * 0.72, sz * 0.72)
+
+        # Recycling icon
+        p.setPen(QPen(QColor(140, 100, 0, alpha), 2))
+        icon_sz = sz * 0.3
+        for i in range(3):
+            a1 = _math.radians(i * 120 - 90 + self._golden_glow_phase * 15)
+            a2 = _math.radians(i * 120 + 30 + self._golden_glow_phase * 15)
+            p.drawLine(
+                QPointF(cx + _math.cos(a1) * icon_sz, cy + _math.sin(a1) * icon_sz),
+                QPointF(cx + _math.cos(a2) * icon_sz, cy + _math.sin(a2) * icon_sz)
+            )
+
+        # Highlight
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(QColor(255, 255, 255, alpha // 3)))
+        p.drawEllipse(QPointF(cx - sz * 0.2, cy - sz * 0.25), sz * 0.35, sz * 0.25)
 
     def paintEvent(self, event):
         if not self._visible:
@@ -180,46 +264,123 @@ class CoinDisplayWidget(QWidget):
         p.setOpacity(self._opacity)
 
         w, h = self.width(), self.height()
-        cx, cy = w // 2, h // 3
 
-        p.translate(cx, cy)
-        p.scale(self._scale, self._scale)
+        # ── Uchuvchi coinlar — ekran markazida ──
+        mcx = w / 2
+        mcy = h * 0.42
+        for fc in self._flying_coins:
+            alpha = int(fc.life * 255)
+            self._draw_coin(p, mcx + fc.x, mcy + fc.y, fc.size, alpha)
 
-        # Glow
-        glow = QRadialGradient(0, 0, 120)
-        glow.setColorAt(0, QColor(255, 215, 0, 80))
-        glow.setColorAt(1, QColor(255, 215, 0, 0))
+        # ── Oltin glow — maskot ostida ──
+        glow_a = int(50 + 30 * _math.sin(self._golden_glow_phase))
+        ground_glow = QRadialGradient(QPointF(mcx, mcy + 100), 200)
+        ground_glow.setColorAt(0, QColor(255, 200, 0, glow_a))
+        ground_glow.setColorAt(0.5, QColor(255, 180, 0, glow_a // 2))
+        ground_glow.setColorAt(1, QColor(255, 150, 0, 0))
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(glow))
-        p.drawEllipse(QPointF(0, 0), 120, 120)
+        p.setBrush(QBrush(ground_glow))
+        p.drawEllipse(QPointF(mcx, mcy + 100), 220, 80)
 
-        # Coin doira
-        coin_grad = QRadialGradient(QPointF(-10, -15), 70)
-        coin_grad.setColorAt(0, QColor(255, 241, 118))
-        coin_grad.setColorAt(0.5, QColor(255, 215, 0))
-        coin_grad.setColorAt(1, QColor(255, 160, 0))
-        p.setBrush(QBrush(coin_grad))
-        p.setPen(QPen(QColor(255, 160, 0), 4))
-        p.drawEllipse(QPointF(0, 0), 60, 60)
+        # ── Pastdagi bar — "+X EcoCoin berildi!" ──
+        bar_h = 80
+        bar_w = min(w - 60, 580)
+        bar_x = (w - bar_w) / 2
+        bar_y = h - bar_h - 20
 
-        # Coin ichidagi matn
+        p.save()
+        bar_scale = 0.5 + self._scale * 0.5
+        p.translate(w / 2, bar_y + bar_h / 2)
+        p.scale(bar_scale, bar_scale)
+        p.translate(-w / 2, -(bar_y + bar_h / 2))
+
+        # Shadow
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(0, 50, 0, 50))
+        sh_path = QPainterPath()
+        sh_path.addRoundedRect(QRectF(bar_x + 4, bar_y + 5, bar_w, bar_h), 28, 28)
+        p.drawPath(sh_path)
+
+        # Outer glow
+        glow_rect = QRectF(bar_x - 15, bar_y - 10, bar_w + 30, bar_h + 20)
+        outer_glow = QRadialGradient(glow_rect.center(), bar_w * 0.55)
+        outer_glow.setColorAt(0, QColor(76, 200, 80, 40))
+        outer_glow.setColorAt(1, QColor(76, 175, 80, 0))
+        p.setBrush(QBrush(outer_glow))
+        p.drawRoundedRect(glow_rect, 35, 35)
+
+        # Bar background — yashil gradient
+        bar_grad = QLinearGradient(bar_x, bar_y, bar_x, bar_y + bar_h)
+        bar_grad.setColorAt(0.0, QColor(85, 195, 90, 240))
+        bar_grad.setColorAt(0.3, QColor(66, 175, 72, 245))
+        bar_grad.setColorAt(0.7, QColor(50, 155, 55, 245))
+        bar_grad.setColorAt(1.0, QColor(38, 130, 43, 240))
+        p.setBrush(QBrush(bar_grad))
+        p.setPen(Qt.PenStyle.NoPen)
+        bar_path = QPainterPath()
+        bar_path.addRoundedRect(QRectF(bar_x, bar_y, bar_w, bar_h), 28, 28)
+        p.drawPath(bar_path)
+
+        # Highlight — yuqori chiziq
+        hl_grad = QLinearGradient(bar_x, bar_y, bar_x, bar_y + bar_h * 0.4)
+        hl_grad.setColorAt(0, QColor(255, 255, 255, 50))
+        hl_grad.setColorAt(1, QColor(255, 255, 255, 0))
+        p.setBrush(QBrush(hl_grad))
+        hl_path = QPainterPath()
+        hl_path.addRoundedRect(QRectF(bar_x + 3, bar_y + 2, bar_w - 6, bar_h * 0.4), 25, 25)
+        p.drawPath(hl_path)
+
+        # Border — nozik
+        p.setPen(QPen(QColor(100, 220, 110, 120), 2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(bar_path)
+
+        # ── Coin icon chap tomonda ──
+        coin_cx = bar_x + 55
+        coin_cy = bar_y + bar_h / 2
+        coin_sz = 26
+
+        # Mini coin
+        mcg = QRadialGradient(QPointF(coin_cx - 3, coin_cy - 4), coin_sz * 1.3)
+        mcg.setColorAt(0, QColor(255, 245, 140))
+        mcg.setColorAt(0.5, QColor(255, 215, 0))
+        mcg.setColorAt(1, QColor(200, 150, 0))
+        p.setBrush(QBrush(mcg))
+        p.setPen(QPen(QColor(180, 130, 0), 2))
+        p.drawEllipse(QPointF(coin_cx, coin_cy), coin_sz, coin_sz)
+
+        # Coin ichidagi +X
         p.setPen(QColor(120, 80, 0))
-        font = QFont("Segoe UI", 34, QFont.Weight.Bold)
-        p.setFont(font)
-        p.drawText(QRectF(-50, -25, 100, 50), Qt.AlignmentFlag.AlignCenter, self._coin_text)
+        cf = QFont("Segoe UI", 16, QFont.Weight.ExtraBold)
+        p.setFont(cf)
+        p.drawText(QRectF(coin_cx - coin_sz, coin_cy - coin_sz, coin_sz * 2, coin_sz * 2),
+                   Qt.AlignmentFlag.AlignCenter, f"+{self._amount}")
 
-        # Pastda EcoCoin yozuvi
-        p.setPen(QColor(255, 215, 0))
-        font2 = QFont("Segoe UI", 20, QFont.Weight.Bold)
-        p.setFont(font2)
-        p.drawText(QRectF(-100, 70, 200, 35), Qt.AlignmentFlag.AlignCenter, "EcoCoin")
+        # Coin highlight
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(QColor(255, 255, 255, 80)))
+        p.drawEllipse(QPointF(coin_cx - 5, coin_cy - 8), 10, 7)
 
-        # Waste nomi
+        # ── Matn — "EcoCoin berildi!" ──
+        text_x = coin_cx + coin_sz + 15
+        text_w = bar_w - (text_x - bar_x) - 20
+
+        # Shadow text
+        p.setPen(QColor(0, 60, 0, 100))
+        main_font = QFont("Segoe UI", 24, QFont.Weight.ExtraBold)
+        p.setFont(main_font)
+        p.drawText(QRectF(text_x + 2, bar_y + 2, text_w, bar_h),
+                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                   "EcoCoin berildi!")
+
+        # Main text
         p.setPen(QColor(255, 255, 255))
-        font3 = QFont("Segoe UI", 16)
-        p.setFont(font3)
-        p.drawText(QRectF(-150, 110, 300, 30), Qt.AlignmentFlag.AlignCenter, self._waste_text)
+        p.setFont(main_font)
+        p.drawText(QRectF(text_x, bar_y, text_w, bar_h),
+                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                   "EcoCoin berildi!")
 
+        p.restore()
         p.end()
 
 
@@ -453,8 +614,7 @@ class KioskWindow(QMainWindow):
         self.setMinimumSize(900, 650)
         self.setStyleSheet("""
             QMainWindow {
-                background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
-                    stop:0 #0a0e14, stop:0.4 #0d1117, stop:0.7 #111820, stop:1 #0a0e14);
+                background: #060e1e;
             }
         """)
 
@@ -538,9 +698,9 @@ class KioskWindow(QMainWindow):
         if hasattr(self, 'coin_display'):
             self.coin_display.setGeometry(0, 0, self.width(), self.height())
         if hasattr(self, 'qr_widget'):
-            # QR widget — o'ng tomonda, avatar balandligida
+            # QR widget — o'ng tomonda, biroz o'rtaroqda
             qr_w = 420
-            qr_x = self.width() - qr_w - 30
+            qr_x = self.width() - qr_w - 120
             qr_y = 160
             qr_h = self.height() - qr_y
             self.qr_widget.setGeometry(qr_x, qr_y, qr_w, qr_h)
