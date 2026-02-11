@@ -29,26 +29,25 @@ COIN_REWARD = 5
 
 
 class CameraWidget(QLabel):
-    """Kichik kamera oynasi — yuqorida markazda."""
+    """Katta kamera oynasi — yuqorida markazda, chiroyli ramka bilan."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(240, 180)
+        self.setFixedSize(420, 310)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("""
             QLabel {
-                border: 3px solid qlineargradient(x1:0,y1:0,x2:1,y2:1,
-                    stop:0 #4CAF50, stop:1 #81C784);
-                border-radius: 18px;
-                background-color: #0d1117;
+                background-color: transparent;
+                border: none;
             }
         """)
         shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(30)
-        shadow.setColor(QColor(76, 175, 80, 140))
-        shadow.setOffset(0, 5)
+        shadow.setBlurRadius(45)
+        shadow.setColor(QColor(76, 175, 80, 180))
+        shadow.setOffset(0, 6)
         self.setGraphicsEffect(shadow)
         self._placeholder = True
+        self._frame_pixmap = None
 
     def update_frame(self, frame: np.ndarray):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -58,20 +57,65 @@ class CameraWidget(QLabel):
             self.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
             Qt.TransformationMode.SmoothTransformation
         )
-        self.setPixmap(pixmap)
+        self._frame_pixmap = pixmap
         self._placeholder = False
+        self.update()
 
     def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        border = 4
+        radius = 22
+        inner = self.rect().adjusted(border, border, -border, -border)
+
+        # Rounded clip path — pixmap ramkadan chiqmasligi uchun
+        clip_path = QPainterPath()
+        clip_path.addRoundedRect(QRectF(inner), radius - 2, radius - 2)
+        p.setClipPath(clip_path)
+
         if self._placeholder:
-            p = QPainter(self)
-            p.setRenderHint(QPainter.RenderHint.Antialiasing)
-            p.fillRect(self.rect(), QColor(13, 17, 23))
-            p.setPen(QColor(76, 175, 80, 180))
-            p.setFont(QFont("Segoe UI", 11))
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "📷 Kamera yuklanmoqda...")
-            p.end()
+            # Gradient background
+            bg_grad = QLinearGradient(0, 0, 0, self.height())
+            bg_grad.setColorAt(0, QColor(13, 17, 23))
+            bg_grad.setColorAt(1, QColor(20, 30, 20))
+            p.fillRect(self.rect(), QBrush(bg_grad))
+
+            # Camera icon
+            p.setPen(QColor(76, 175, 80, 120))
+            icon_font = QFont("Segoe UI", 40)
+            p.setFont(icon_font)
+            p.drawText(QRectF(0, self.height() * 0.2, self.width(), 60),
+                       Qt.AlignmentFlag.AlignCenter, "📷")
+
+            # Text
+            p.setPen(QColor(76, 175, 80, 200))
+            p.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
+            p.drawText(QRectF(0, self.height() * 0.55, self.width(), 35),
+                       Qt.AlignmentFlag.AlignCenter, "Kamera yuklanmoqda...")
         else:
-            super().paintEvent(event)
+            # Kamera frameni clip ichida chizish
+            pm = self._frame_pixmap
+            x = (self.width() - pm.width()) // 2
+            y = (self.height() - pm.height()) // 2
+            p.drawPixmap(x, y, pm)
+
+        # Clip olib tashlash — ramkani ustidan chizish
+        p.setClipping(False)
+
+        # Gradient border
+        border_grad = QLinearGradient(0, 0, self.width(), self.height())
+        border_grad.setColorAt(0, QColor(102, 187, 106))
+        border_grad.setColorAt(0.5, QColor(67, 160, 71))
+        border_grad.setColorAt(1, QColor(46, 125, 50))
+        p.setPen(QPen(QBrush(border_grad), border, Qt.PenStyle.SolidLine))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        frame_path = QPainterPath()
+        frame_path.addRoundedRect(QRectF(self.rect()).adjusted(
+            border / 2, border / 2, -border / 2, -border / 2), radius, radius)
+        p.drawPath(frame_path)
+
+        p.end()
 
 
 class CoinDisplayWidget(QWidget):
@@ -160,21 +204,21 @@ class CoinDisplayWidget(QWidget):
 
         # Coin ichidagi matn
         p.setPen(QColor(120, 80, 0))
-        font = QFont("Segoe UI", 28, QFont.Weight.Bold)
+        font = QFont("Segoe UI", 34, QFont.Weight.Bold)
         p.setFont(font)
         p.drawText(QRectF(-50, -25, 100, 50), Qt.AlignmentFlag.AlignCenter, self._coin_text)
 
         # Pastda EcoCoin yozuvi
         p.setPen(QColor(255, 215, 0))
-        font2 = QFont("Segoe UI", 16, QFont.Weight.Bold)
+        font2 = QFont("Segoe UI", 20, QFont.Weight.Bold)
         p.setFont(font2)
-        p.drawText(QRectF(-100, 70, 200, 30), Qt.AlignmentFlag.AlignCenter, "EcoCoin")
+        p.drawText(QRectF(-100, 70, 200, 35), Qt.AlignmentFlag.AlignCenter, "EcoCoin")
 
         # Waste nomi
         p.setPen(QColor(255, 255, 255))
-        font3 = QFont("Segoe UI", 13)
+        font3 = QFont("Segoe UI", 16)
         p.setFont(font3)
-        p.drawText(QRectF(-150, 105, 300, 25), Qt.AlignmentFlag.AlignCenter, self._waste_text)
+        p.drawText(QRectF(-150, 110, 300, 30), Qt.AlignmentFlag.AlignCenter, self._waste_text)
 
         p.end()
 
@@ -421,13 +465,37 @@ class KioskWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Camera (markazda yuqorida)
+        # Camera (markazda yuqorida) + "Chiqindini cameraga ko'rsating" yozuvi
         cam_container = QWidget()
-        cam_layout = QHBoxLayout(cam_container)
-        cam_layout.setContentsMargins(0, 8, 0, 8)
-        cam_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cam_v_layout = QVBoxLayout(cam_container)
+        cam_v_layout.setContentsMargins(0, 12, 0, 6)
+        cam_v_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cam_v_layout.setSpacing(8)
+
+        # Tepada yozuv
+        self.cam_label = QLabel("♻️  Chiqindini cameraga ko'rsating  ♻️")
+        self.cam_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cam_label.setStyleSheet("""
+            QLabel {
+                color: #A5D6A7;
+                font-size: 20px;
+                font-weight: bold;
+                font-family: 'Segoe UI';
+                background: transparent;
+                padding: 4px 18px;
+                border: none;
+            }
+        """)
+        cam_label_shadow = QGraphicsDropShadowEffect(self.cam_label)
+        cam_label_shadow.setBlurRadius(18)
+        cam_label_shadow.setColor(QColor(76, 175, 80, 100))
+        cam_label_shadow.setOffset(0, 2)
+        self.cam_label.setGraphicsEffect(cam_label_shadow)
+        cam_v_layout.addWidget(self.cam_label)
+
+        # Kamera widgeti
         self.camera_widget = CameraWidget()
-        cam_layout.addWidget(self.camera_widget)
+        cam_v_layout.addWidget(self.camera_widget, alignment=Qt.AlignmentFlag.AlignCenter)
         root.addWidget(cam_container)
 
         # ─── Pastki qism: mascot (to'liq kenglikda) ───
@@ -517,16 +585,16 @@ class KioskWindow(QMainWindow):
         """Kamera frameda detection box chizish."""
         x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
         # Box
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
         # Rounded corners
-        r = 8
+        r = 12
         for cx, cy in [(x1, y1), (x2, y1), (x1, y2), (x2, y2)]:
-            cv2.circle(frame, (cx, cy), r, color, 2)
+            cv2.circle(frame, (cx, cy), r, color, 3)
         # Label background
         text = f"{label} {conf:.0%}"
-        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-        cv2.rectangle(frame, (x1, y1 - th - 12), (x1 + tw + 10, y1), color, -1)
-        cv2.putText(frame, text, (x1 + 5, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+        cv2.rectangle(frame, (x1, y1 - th - 16), (x1 + tw + 14, y1), color, -1)
+        cv2.putText(frame, text, (x1 + 7, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
     def _run_detection(self, frame: np.ndarray):
         try:

@@ -594,8 +594,8 @@ class MascotWidget(QWidget):
 
     def _draw_message_bubble(self, p: QPainter, w: int, h: int):
         msg = self._override_message or self._current_message
-        bubble_h = 65
-        bubble_w = min(w - 40, 550)
+        bubble_h = 75
+        bubble_w = min(w - 40, 620)
         bx = (w - bubble_w) / 2
         by = h - bubble_h - 15
 
@@ -633,7 +633,7 @@ class MascotWidget(QWidget):
 
         # Text
         p.setPen(QColor(33, 33, 33))
-        font = QFont("Segoe UI", 15)
+        font = QFont("Segoe UI", 18)
         font.setBold(True)
         p.setFont(font)
         p.drawText(QRectF(bx, by, bubble_w, bubble_h), Qt.AlignmentFlag.AlignCenter, msg)
