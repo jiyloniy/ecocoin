@@ -3,3 +3,9 @@ sudo apt install -y build-essential wget \
 libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev \
 libncurses5-dev libncursesw5-dev libffi-dev liblzma-dev tk-dev \
 libgdbm-dev libdb5.3-dev libexpat1-dev
+
+
+
+
+./configure --prefix=/usr/local --enable-optimizations --with-openssl=/usr --with-ensurepip=install
+make -j2
