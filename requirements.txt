@@ -6,3 +6,6 @@ torch
 torchvision
 ultralytics
 PyQt6
+picamera2
+# Raspberry Pi CSI kamera uchun (faqat RPi da o'rnating):
+# pip install picamera2

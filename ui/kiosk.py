@@ -25,6 +25,14 @@ from ui.sounds import play_detection_sound
 
 logger = logging.getLogger(__name__)
 
+# Raspberry Pi CSI kamera uchun
+_PICAMERA2_AVAILABLE = False
+try:
+    from picamera2 import Picamera2
+    _PICAMERA2_AVAILABLE = True
+except ImportError:
+    pass
+
 # ─── Har bir chiqindi uchun 5 coin ───
 COIN_REWARD = 5
 
@@ -671,7 +679,9 @@ class KioskWindow(QMainWindow):
         self.coin_display = CoinDisplayWidget(central)
 
         # ─── AI / Camera state ───
-        self.cap = None
+        self.cap = None          # OpenCV VideoCapture
+        self.picam = None        # picamera2 Picamera2
+        self._camera_backend = None  # 'picamera' yoki 'opencv'
         self.classifier = None
         self.total_ecocoins = 0
         self.frame_count = 0
@@ -706,6 +716,56 @@ class KioskWindow(QMainWindow):
             self.qr_widget.setGeometry(qr_x, qr_y, qr_w, qr_h)
             self.qr_widget.raise_()
 
+    def _is_raspberry_pi(self) -> bool:
+        """Raspberry Pi qurilmasida ishlayotganligini tekshirish."""
+        try:
+            with open("/proc/cpuinfo", "r") as f:
+                cpuinfo = f.read()
+            return "Raspberry Pi" in cpuinfo or "BCM" in cpuinfo
+        except (FileNotFoundError, PermissionError):
+            return False
+
+    def _open_picamera(self) -> bool:
+        """Raspberry Pi CSI kamerani picamera2 orqali ochish."""
+        try:
+            from ai.config import CAMERA_WIDTH, CAMERA_HEIGHT, RPI_CAMERA_HFLIP, RPI_CAMERA_VFLIP
+            self.picam = Picamera2()
+            config = self.picam.create_preview_configuration(
+                main={"size": (CAMERA_WIDTH, CAMERA_HEIGHT), "format": "RGB888"},
+            )
+            self.picam.configure(config)
+
+            if RPI_CAMERA_HFLIP or RPI_CAMERA_VFLIP:
+                try:
+                    from libcamera import Transform
+                    t = Transform(hflip=RPI_CAMERA_HFLIP, vflip=RPI_CAMERA_VFLIP)
+                    self.picam.set_controls({"Transform": t})
+                except ImportError:
+                    pass
+
+            self.picam.start()
+            self._camera_backend = "picamera"
+            logger.info("RPi CSI kamera ochildi (picamera2)")
+            return True
+        except Exception as e:
+            logger.error(f"RPi kamerani ochib bo'lmadi: {e}")
+            return False
+
+    def _read_frame(self):
+        """Kameradan kadr o'qish — backend ga qarab."""
+        if self._camera_backend == "picamera" and self.picam is not None:
+            try:
+                frame = self.picam.capture_array()
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                return True, frame
+            except Exception as e:
+                logger.warning(f"RPi kameradan kadr o'qishda xato: {e}")
+                return False, None
+        else:
+            if self.cap is None or not self.cap.isOpened():
+                return False, None
+            return self.cap.read()
+
     def start(self, camera_index: int = 0):
         """Kamera va AI ishga tushirish."""
         try:
@@ -716,23 +776,36 @@ class KioskWindow(QMainWindow):
             logger.error(f"AI model yuklanmadi: {e}")
             logger.error(f"AI xato: {e}")
 
-        self.cap = cv2.VideoCapture(camera_index)
-        if not self.cap.isOpened():
-            logger.error("Kamera ochilmadi!")
-            logger.error("Kamera topilmadi")
-            return
+        # Avval RPi CSI kamerani sinash, keyin OpenCV ga qaytish
+        camera_opened = False
+        from ai.config import CAMERA_BACKEND
+        use_picamera = (
+            CAMERA_BACKEND == "picamera"
+            or (CAMERA_BACKEND == "auto" and _PICAMERA2_AVAILABLE and self._is_raspberry_pi())
+        )
 
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        if use_picamera:
+            camera_opened = self._open_picamera()
+
+        if not camera_opened:
+            # OpenCV fallback
+            self.cap = cv2.VideoCapture(camera_index)
+            if not self.cap.isOpened():
+                logger.error("Kamera ochilmadi!")
+                logger.error("Kamera topilmadi")
+                return
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self._camera_backend = "opencv"
+            logger.info("OpenCV kamera ochildi")
+
         self._cam_timer.start(33)
-        logger.info("Tayyor! Chiqindini ko'rsating")
+        logger.info(f"Tayyor! Kamera backend: {self._camera_backend}")
         logger.info("Kiosk ishga tushdi")
 
     def _process_frame(self):
-        if self.cap is None or not self.cap.isOpened():
-            return
-        ret, frame = self.cap.read()
-        if not ret:
+        ret, frame = self._read_frame()
+        if not ret or frame is None:
             return
 
         self.frame_count += 1
@@ -864,5 +937,11 @@ class KioskWindow(QMainWindow):
         self._cam_timer.stop()
         if self.cap:
             self.cap.release()
+        if self.picam:
+            try:
+                self.picam.stop()
+                self.picam.close()
+            except Exception:
+                pass
         logger.info(f"Kiosk yopildi. Jami: {self.total_ecocoins} EcoCoin")
         event.accept()
