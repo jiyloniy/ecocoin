@@ -25,6 +25,22 @@ from ui.sounds import play_detection_sound
 
 logger = logging.getLogger(__name__)
 
+# Raspberry Pi kamera backendlari
+_PICAMERA2_AVAILABLE = False
+try:
+    from picamera2 import Picamera2
+    _PICAMERA2_AVAILABLE = True
+except ImportError:
+    pass
+
+_LIBCAMERA_AVAILABLE = False
+try:
+    import subprocess as _sp
+    _sp.run(["libcamera-vid", "--version"], capture_output=True, timeout=5)
+    _LIBCAMERA_AVAILABLE = True
+except Exception:
+    pass
+
 # ─── Har bir chiqindi uchun 5 coin ───
 COIN_REWARD = 5
 
@@ -671,7 +687,10 @@ class KioskWindow(QMainWindow):
         self.coin_display = CoinDisplayWidget(central)
 
         # ─── AI / Camera state ───
-        self.cap = None
+        self.cap = None          # OpenCV VideoCapture
+        self.picam = None        # picamera2 Picamera2
+        self.libcam = None       # LibcameraCapture (subprocess)
+        self._camera_backend = None  # 'picamera', 'libcamera', yoki 'opencv'
         self.classifier = None
         self.total_ecocoins = 0
         self.frame_count = 0
@@ -706,6 +725,108 @@ class KioskWindow(QMainWindow):
             self.qr_widget.setGeometry(qr_x, qr_y, qr_w, qr_h)
             self.qr_widget.raise_()
 
+    def _is_raspberry_pi(self) -> bool:
+        """Raspberry Pi qurilmasida ishlayotganligini tekshirish."""
+        try:
+            with open("/proc/cpuinfo", "r") as f:
+                cpuinfo = f.read()
+            return "Raspberry Pi" in cpuinfo or "BCM" in cpuinfo
+        except (FileNotFoundError, PermissionError):
+            return False
+
+    def _open_picamera(self) -> bool:
+        """Raspberry Pi CSI kamerani picamera2 orqali ochish."""
+        if not _PICAMERA2_AVAILABLE:
+            return False
+        try:
+            from ai.config import CAMERA_WIDTH, CAMERA_HEIGHT, RPI_CAMERA_HFLIP, RPI_CAMERA_VFLIP
+            self.picam = Picamera2()
+            config = self.picam.create_preview_configuration(
+                main={"size": (CAMERA_WIDTH, CAMERA_HEIGHT), "format": "RGB888"},
+            )
+            self.picam.configure(config)
+
+            if RPI_CAMERA_HFLIP or RPI_CAMERA_VFLIP:
+                try:
+                    from libcamera import Transform
+                    t = Transform(hflip=RPI_CAMERA_HFLIP, vflip=RPI_CAMERA_VFLIP)
+                    self.picam.set_controls({"Transform": t})
+                except ImportError:
+                    pass
+
+            self.picam.start()
+            self._camera_backend = "picamera"
+            logger.info("RPi CSI kamera ochildi (picamera2)")
+            return True
+        except Exception as e:
+            logger.error(f"picamera2 xatosi: {e}")
+            self.picam = None
+            return False
+
+    def _open_libcamera(self) -> bool:
+        """libcamera-vid subprocess orqali CSI kamerani ochish (kutubxona kerak EMAS)."""
+        if not _LIBCAMERA_AVAILABLE:
+            return False
+        try:
+            from ai.camera import LibcameraCapture
+            from ai.config import CAMERA_WIDTH, CAMERA_HEIGHT, FPS
+            self.libcam = LibcameraCapture(
+                width=CAMERA_WIDTH, height=CAMERA_HEIGHT, fps=FPS
+            )
+            if self.libcam.start():
+                self._camera_backend = "libcamera"
+                logger.info("RPi kamera ochildi (libcamera-vid subprocess)")
+                return True
+            self.libcam = None
+            return False
+        except Exception as e:
+            logger.error(f"libcamera-vid xatosi: {e}")
+            self.libcam = None
+            return False
+
+    def _open_opencv(self, camera_index: int) -> bool:
+        """OpenCV orqali kamerani ochish (USB webcam yoki V4L2)."""
+        import os
+        # RPi da V4L2 sinash
+        if self._is_raspberry_pi() and os.path.exists("/dev/video0"):
+            self.cap = cv2.VideoCapture(camera_index, cv2.CAP_V4L2)
+            if self.cap.isOpened():
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                self._camera_backend = "opencv"
+                logger.info("OpenCV V4L2 kamera ochildi")
+                return True
+            self.cap = None
+
+        # Oddiy OpenCV
+        self.cap = cv2.VideoCapture(camera_index)
+        if self.cap.isOpened():
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self._camera_backend = "opencv"
+            logger.info("OpenCV kamera ochildi")
+            return True
+
+        self.cap = None
+        return False
+
+    def _read_frame(self):
+        """Kameradan kadr o'qish — backend ga qarab."""
+        if self._camera_backend == "picamera" and self.picam is not None:
+            try:
+                frame = self.picam.capture_array()
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                return True, frame
+            except Exception as e:
+                logger.warning(f"picamera2 kadr xatosi: {e}")
+                return False, None
+        elif self._camera_backend == "libcamera" and self.libcam is not None:
+            return self.libcam.read_frame()
+        else:
+            if self.cap is None or not self.cap.isOpened():
+                return False, None
+            return self.cap.read()
+
     def start(self, camera_index: int = 0):
         """Kamera va AI ishga tushirish."""
         try:
@@ -716,23 +837,44 @@ class KioskWindow(QMainWindow):
             logger.error(f"AI model yuklanmadi: {e}")
             logger.error(f"AI xato: {e}")
 
-        self.cap = cv2.VideoCapture(camera_index)
-        if not self.cap.isOpened():
-            logger.error("Kamera ochilmadi!")
-            logger.error("Kamera topilmadi")
+        # Kamerani ochish — avtomatik fallback bilan
+        from ai.config import CAMERA_BACKEND
+        camera_opened = False
+        is_rpi = self._is_raspberry_pi()
+
+        # Foydalanuvchi tanlagan backend
+        if CAMERA_BACKEND == "picamera":
+            camera_opened = self._open_picamera()
+        elif CAMERA_BACKEND == "libcamera":
+            camera_opened = self._open_libcamera()
+        elif CAMERA_BACKEND == "opencv":
+            camera_opened = self._open_opencv(camera_index)
+        else:
+            # auto — ketma-ket sinash
+            if is_rpi:
+                camera_opened = self._open_picamera()
+                if not camera_opened:
+                    logger.info("picamera2 ishlamadi, libcamera sinash...")
+                    camera_opened = self._open_libcamera()
+            if not camera_opened:
+                camera_opened = self._open_opencv(camera_index)
+
+        if not camera_opened:
+            logger.error("Kamera ochilmadi! Hech qanday backend ishlamadi.")
+            logger.error(
+                "RPi da sinab ko'ring:\n"
+                "  sudo modprobe bcm2835-v4l2\n"
+                "  yoki: sudo raspi-config → Interface Options → Camera → Enable"
+            )
             return
 
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         self._cam_timer.start(33)
-        logger.info("Tayyor! Chiqindini ko'rsating")
+        logger.info(f"Tayyor! Kamera backend: {self._camera_backend}")
         logger.info("Kiosk ishga tushdi")
 
     def _process_frame(self):
-        if self.cap is None or not self.cap.isOpened():
-            return
-        ret, frame = self.cap.read()
-        if not ret:
+        ret, frame = self._read_frame()
+        if not ret or frame is None:
             return
 
         self.frame_count += 1
@@ -864,5 +1006,13 @@ class KioskWindow(QMainWindow):
         self._cam_timer.stop()
         if self.cap:
             self.cap.release()
+        if self.picam:
+            try:
+                self.picam.stop()
+                self.picam.close()
+            except Exception:
+                pass
+        if self.libcam:
+            self.libcam.stop()
         logger.info(f"Kiosk yopildi. Jami: {self.total_ecocoins} EcoCoin")
         event.accept()

@@ -81,6 +81,17 @@ CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
 FPS = 30
 
+# ─── Raspberry Pi kamera sozlamalari ───
+# "auto"      = avtomatik aniqlash (picamera2 → libcamera → opencv)
+# "picamera"  = RPi CSI kamera (picamera2 kutubxonasi kerak)
+# "libcamera" = RPi CSI kamera (kutubxona kerak EMAS, faqat RPi OS)
+# "opencv"    = USB webcam yoki V4L2 orqali CSI kamera
+CAMERA_BACKEND = "auto"
+# picamera2 uchun qo'shimcha sozlamalar
+RPI_CAMERA_ROTATION = 0            # Kamera burchagi: 0, 90, 180, 270
+RPI_CAMERA_HFLIP = False           # Gorizontal aks
+RPI_CAMERA_VFLIP = False           # Vertikal aks
+
 # ─── UI sozlamalari ───
 WINDOW_NAME = "EcoCoin - Chiqindilarni Saralash"
 FONT_SCALE = 0.7

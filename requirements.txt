@@ -6,3 +6,10 @@ torch
 torchvision
 ultralytics
 PyQt6
+
+# Raspberry Pi CSI kamera uchun (ixtiyoriy):
+# 1-usul: picamera2 (agar ishlasa):
+#   sudo apt install python3-picamera2
+# 2-usul: libcamera (qo'shimcha kutubxona kerak EMAS, RPi OS da tayyor)
+# 3-usul: V4L2 driver:
+#   sudo modprobe bcm2835-v4l2

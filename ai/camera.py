@@ -1,10 +1,21 @@
 """
 Kamera orqali real-vaqtda chiqindilarni aniqlash moduli.
 Real-time waste detection via camera module.
+
+Qo'llab-quvvatlanadigan kamera backendlari:
+  1. picamera2  — RPi CSI kamera (picamera2 kutubxonasi kerak)
+  2. libcamera  — RPi CSI kamera (hech qanday Python kutubxona kerak EMAS,
+                   faqat libcamera-vid buyrug'i kerak — RPi OS da tayyor)
+  3. opencv     — USB webcam yoki V4L2 orqali CSI kamera
+
+Supports: Raspberry Pi CSI camera and USB webcams.
 """
 
 import cv2
 import logging
+import os
+import subprocess
+import time
 import numpy as np
 from typing import Optional, Callable
 from datetime import datetime
@@ -20,9 +31,186 @@ from ai.config import (
     FONT_THICKNESS,
     COLORS,
     WASTE_CATEGORIES,
+    CAMERA_BACKEND,
+    RPI_CAMERA_ROTATION,
+    RPI_CAMERA_HFLIP,
+    RPI_CAMERA_VFLIP,
 )
 
 logger = logging.getLogger(__name__)
+
+# ─── Backend mavjudligini tekshirish ───
+
+_PICAMERA2_AVAILABLE = False
+try:
+    from picamera2 import Picamera2
+    _PICAMERA2_AVAILABLE = True
+    logger.info("picamera2 kutubxonasi topildi ✓")
+except ImportError:
+    pass
+
+_LIBCAMERA_AVAILABLE = False
+try:
+    # libcamera-vid buyrug'i mavjudligini tekshirish
+    result = subprocess.run(
+        ["libcamera-vid", "--version"],
+        capture_output=True, timeout=5
+    )
+    _LIBCAMERA_AVAILABLE = True
+    logger.info("libcamera-vid topildi ✓")
+except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+    pass
+
+
+def _is_raspberry_pi() -> bool:
+    """Raspberry Pi qurilmasida ishlayotganligini tekshirish."""
+    try:
+        with open("/proc/cpuinfo", "r") as f:
+            cpuinfo = f.read()
+        return "Raspberry Pi" in cpuinfo or "BCM" in cpuinfo
+    except (FileNotFoundError, PermissionError):
+        return False
+
+
+def _check_v4l2_device() -> bool:
+    """CSI kamera V4L2 qurilmasi sifatida mavjudligini tekshirish."""
+    return os.path.exists("/dev/video0")
+
+
+def _detect_camera_backend() -> str:
+    """
+    Kamera backendini avtomatik aniqlash.
+    Sinash tartibi: picamera2 → libcamera → v4l2/opencv
+    """
+    if CAMERA_BACKEND != "auto":
+        return CAMERA_BACKEND
+
+    is_rpi = _is_raspberry_pi()
+
+    if is_rpi:
+        # 1-usul: picamera2
+        if _PICAMERA2_AVAILABLE:
+            logger.info("RPi: picamera2 backend ishlatiladi")
+            return "picamera"
+
+        # 2-usul: libcamera subprocess (hech qanday Python kutubxona kerak emas!)
+        if _LIBCAMERA_AVAILABLE:
+            logger.info("RPi: libcamera backend ishlatiladi (subprocess)")
+            return "libcamera"
+
+        # 3-usul: V4L2 orqali OpenCV
+        if _check_v4l2_device():
+            logger.info("RPi: /dev/video0 topildi — OpenCV V4L2 backend")
+            return "opencv"
+
+        logger.warning(
+            "RPi kamera topilmadi! Quyidagi buyruqlardan birini sinang:\n"
+            "  sudo modprobe bcm2835-v4l2\n"
+            "  yoki: sudo raspi-config → Interface Options → Camera → Enable"
+        )
+
+    logger.info("OpenCV backend ishlatiladi")
+    return "opencv"
+
+
+class LibcameraCapture:
+    """
+    libcamera-vid subprocess orqali RPi CSI kameradan kadr olish.
+    Hech qanday qo'shimcha Python kutubxona kerak EMAS.
+    Faqat Raspberry Pi OS da ishlaydi.
+    """
+
+    def __init__(self, width: int = 640, height: int = 480, fps: int = 30):
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.process = None
+        self.frame_size = width * height * 3  # RGB888
+
+    def start(self) -> bool:
+        """libcamera-vid ni raw RGB chiqish bilan boshlash."""
+        try:
+            cmd = [
+                "libcamera-vid",
+                "--width", str(self.width),
+                "--height", str(self.height),
+                "--framerate", str(self.fps),
+                "--codec", "yuv420",
+                "--timeout", "0",             # Cheksiz davom etsin
+                "--nopreview",                # Preview oynasiz
+                "-o", "-",                    # stdout ga yozish
+            ]
+
+            # Flip sozlamalari
+            if RPI_CAMERA_HFLIP:
+                cmd.append("--hflip")
+            if RPI_CAMERA_VFLIP:
+                cmd.append("--vflip")
+            if RPI_CAMERA_ROTATION:
+                cmd.extend(["--rotation", str(RPI_CAMERA_ROTATION)])
+
+            self.process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=self.width * self.height * 3,
+            )
+
+            # Kamera ishga tushishi uchun biroz kutish
+            time.sleep(1.0)
+
+            if self.process.poll() is not None:
+                logger.error("libcamera-vid ishga tushmadi")
+                return False
+
+            logger.info(
+                f"libcamera-vid ishga tushdi: {self.width}x{self.height}@{self.fps}fps"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"libcamera-vid xatosi: {e}")
+            return False
+
+    def read_frame(self) -> tuple:
+        """
+        YUV420 kadrni o'qib, BGR ga aylantirish.
+        Returns: (success: bool, frame: np.ndarray | None)
+        """
+        if self.process is None or self.process.poll() is not None:
+            return False, None
+
+        try:
+            # YUV420 = width * height * 1.5 bayt
+            yuv_size = self.width * self.height * 3 // 2
+            raw = self.process.stdout.read(yuv_size)
+
+            if len(raw) < yuv_size:
+                return False, None
+
+            # YUV420 → BGR
+            yuv = np.frombuffer(raw, dtype=np.uint8).reshape(
+                (self.height * 3 // 2, self.width)
+            )
+            bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
+            return True, bgr
+
+        except Exception as e:
+            logger.warning(f"libcamera kadr o'qishda xato: {e}")
+            return False, None
+
+    def stop(self):
+        """Processni to'xtatish."""
+        if self.process is not None:
+            try:
+                self.process.terminate()
+                self.process.wait(timeout=3)
+            except Exception:
+                try:
+                    self.process.kill()
+                except Exception:
+                    pass
+            self.process = None
 
 
 class CameraDetector:
@@ -36,25 +224,115 @@ class CameraDetector:
         camera_index: int = CAMERA_INDEX,
         classifier: Optional[WasteClassifier] = None,
         on_detection: Optional[Callable] = None,
+        camera_backend: Optional[str] = None,
     ):
         """
         Args:
-            camera_index: Kamera indeksi (0 = default).
+            camera_index: Kamera indeksi (0 = default, faqat OpenCV uchun).
             classifier: WasteClassifier obyekti.
             on_detection: Aniqlanganda chaqiriladigan callback funksiya.
+            camera_backend: 'picamera', 'libcamera', 'opencv', yoki None (auto).
         """
         self.camera_index = camera_index
         self.classifier = classifier or WasteClassifier()
         self.on_detection = on_detection
-        self.cap = None
+        self.cap = None          # OpenCV VideoCapture
+        self.picam = None        # Picamera2
+        self.libcam = None       # LibcameraCapture (subprocess)
         self.is_running = False
         self.total_ecocoins = 0
         self.detection_history = []
         self.frame_count = 0
-        self.detect_every_n_frames = 3  # Har 3-frameda detect qilish (tezlik uchun)
+        self.detect_every_n_frames = 3
+        self.backend = camera_backend or _detect_camera_backend()
+        logger.info(f"Kamera backend: {self.backend}")
 
     def _open_camera(self) -> bool:
-        """Kamerani ochish."""
+        """
+        Kamerani ochish — tanlangan backend bo'yicha.
+        Agar muvaffaqiyatsiz bo'lsa, keyingi backendga o'tadi.
+        """
+        if self.backend == "picamera":
+            if self._open_picamera():
+                return True
+            logger.info("picamera2 ishlamadi, libcamera ga o'tilmoqda...")
+            self.backend = "libcamera"
+
+        if self.backend == "libcamera":
+            if self._open_libcamera():
+                return True
+            logger.info("libcamera ishlamadi, OpenCV ga o'tilmoqda...")
+            self.backend = "opencv"
+
+        return self._open_opencv_camera()
+
+    def _open_picamera(self) -> bool:
+        """Raspberry Pi CSI kamerani picamera2 orqali ochish."""
+        if not _PICAMERA2_AVAILABLE:
+            logger.warning("picamera2 kutubxonasi o'rnatilmagan")
+            return False
+        try:
+            self.picam = Picamera2()
+            config = self.picam.create_preview_configuration(
+                main={"size": (CAMERA_WIDTH, CAMERA_HEIGHT), "format": "RGB888"},
+            )
+            self.picam.configure(config)
+
+            if RPI_CAMERA_HFLIP or RPI_CAMERA_VFLIP:
+                try:
+                    from libcamera import Transform
+                    t = Transform(hflip=RPI_CAMERA_HFLIP, vflip=RPI_CAMERA_VFLIP)
+                    self.picam.set_controls({"Transform": t})
+                except ImportError:
+                    logger.warning("libcamera Transform import qilib bo'lmadi")
+
+            self.picam.start()
+            logger.info(f"RPi kamera ochildi (picamera2): {CAMERA_WIDTH}x{CAMERA_HEIGHT}")
+            return True
+        except Exception as e:
+            logger.error(f"picamera2 xatosi: {e}")
+            self.picam = None
+            return False
+
+    def _open_libcamera(self) -> bool:
+        """
+        libcamera-vid subprocess orqali CSI kamerani ochish.
+        Hech qanday Python kutubxona kerak EMAS — faqat RPi OS.
+        """
+        if not _LIBCAMERA_AVAILABLE:
+            logger.warning("libcamera-vid buyrug'i topilmadi")
+            return False
+        try:
+            self.libcam = LibcameraCapture(
+                width=CAMERA_WIDTH, height=CAMERA_HEIGHT, fps=FPS
+            )
+            success = self.libcam.start()
+            if success:
+                logger.info(f"RPi kamera ochildi (libcamera-vid): {CAMERA_WIDTH}x{CAMERA_HEIGHT}")
+            return success
+        except Exception as e:
+            logger.error(f"libcamera-vid xatosi: {e}")
+            self.libcam = None
+            return False
+
+    def _open_opencv_camera(self) -> bool:
+        """
+        OpenCV orqali kamerani ochish.
+        V4L2 driver yuklangan bo'lsa, CSI kamera ham ishlaydi.
+        """
+        # RPi da V4L2 orqali CSI kamerani sinash
+        if _is_raspberry_pi() and _check_v4l2_device():
+            # V4L2 backend bilan ochish
+            self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_V4L2)
+            if self.cap.isOpened():
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+                self.cap.set(cv2.CAP_PROP_FPS, FPS)
+                logger.info(f"OpenCV V4L2 kamera ochildi: {CAMERA_WIDTH}x{CAMERA_HEIGHT}")
+                return True
+            self.cap = None
+
+        # Oddiy OpenCV
         self.cap = cv2.VideoCapture(self.camera_index)
         if not self.cap.isOpened():
             logger.error(f"Kamerani ochib bo'lmadi (index: {self.camera_index})")
@@ -63,9 +341,30 @@ class CameraDetector:
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
         self.cap.set(cv2.CAP_PROP_FPS, FPS)
-
-        logger.info(f"Kamera ochildi: {CAMERA_WIDTH}x{CAMERA_HEIGHT} @ {FPS}fps")
+        logger.info(f"OpenCV kamera ochildi: {CAMERA_WIDTH}x{CAMERA_HEIGHT} @ {FPS}fps")
         return True
+
+    def _read_frame(self):
+        """
+        Kameradan kadr o'qish — backend ga qarab.
+        Returns: (success: bool, frame: np.ndarray | None)
+        """
+        if self.backend == "picamera" and self.picam is not None:
+            try:
+                frame = self.picam.capture_array()
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                return True, frame
+            except Exception as e:
+                logger.warning(f"picamera2 kadr xatosi: {e}")
+                return False, None
+
+        elif self.backend == "libcamera" and self.libcam is not None:
+            return self.libcam.read_frame()
+
+        else:
+            if self.cap is None:
+                return False, None
+            return self.cap.read()
 
     def _draw_detections(
         self, frame: np.ndarray, detections: list
@@ -227,7 +526,7 @@ class CameraDetector:
 
         try:
             while self.is_running:
-                ret, frame = self.cap.read()
+                ret, frame = self._read_frame()
                 if not ret:
                     logger.warning("Kadrni o'qib bo'lmadi")
                     continue
@@ -285,6 +584,14 @@ class CameraDetector:
         self.is_running = False
         if self.cap is not None:
             self.cap.release()
+        if self.picam is not None:
+            try:
+                self.picam.stop()
+                self.picam.close()
+            except Exception:
+                pass
+        if self.libcam is not None:
+            self.libcam.stop()
         cv2.destroyAllWindows()
 
         print("\n" + "=" * 50)
