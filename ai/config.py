@@ -66,9 +66,14 @@ YOLO_TO_WASTE = {
 }
 
 # ─── Model sozlamalari / Model settings ───
-MODEL_NAME = "yolov8n.pt"          # YOLOv8-nano (eng yengil va tez)
-CONFIDENCE_THRESHOLD = 0.30        # Minimal ishonch darajasi (pastroq = yuqoridan ham taniydi)
+MODEL_NAME = "yolov8n.pt"          # YOLOv8-nano (PyTorch — faqat PC / kuchli qurilma)
+MODEL_ONNX = "yolov8n.onnx"       # ONNX format (Raspberry Pi uchun — tez va yengil)
+CONFIDENCE_THRESHOLD = 0.30        # Minimal ishonch darajasi
 IOU_THRESHOLD = 0.45               # Non-max suppression
+# "auto" = avtomatik (ONNX bo'lsa ONNX, aks holda PyTorch)
+# "onnx" = faqat ONNX Runtime (RPi uchun — torch kerak EMAS)
+# "pytorch" = faqat PyTorch/ultralytics
+MODEL_BACKEND = "auto"
 
 # ─── Dumaloq shakl aniqlash (bottle cap) sozlamalari ───
 CIRCLE_DETECTION = True            # Dumaloq shakl orqali ham aniqlash

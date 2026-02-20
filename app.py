@@ -1,23 +1,16 @@
 """
-EcoCoin Kiosk — UI bilan ishga tushirish.
+EcoCoin — Kiosk UI rejimini ishga tushirish.
+Launches the full-screen kiosk with camera, mascot, and coin rewards.
 
-Foydalanish:
-    python app.py              # Oddiy oyna
-    python app.py --fullscreen # To'liq ekran
-    python app.py --camera 1   # Boshqa kamera
+Foydalanish / Usage:
+    python app.py
+    python app.py --camera 1
+    python app.py --fullscreen
 """
 
 import sys
 import argparse
 import logging
-import os
-
-# Torch DLL xatosini oldini olish (PyQt6 bilan conflict)
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-try:
-    import torch  # noqa: F401  — torch ni PyQt6 dan oldin yuklash
-except ImportError:
-    pass
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,40 +18,43 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import Qt
-from ui.kiosk import KioskWindow
+logger = logging.getLogger("ecocoin")
+
+# Windows da PyTorch DLL larini PyQt6 dan OLDIN yuklash kerak
+# (aks holda c10.dll "WinError 1114" xatosi chiqadi)
+try:
+    import torch  # noqa: F401
+except ImportError:
+    pass
 
 
 def main():
     parser = argparse.ArgumentParser(description="EcoCoin Kiosk")
-    parser.add_argument("--camera", "-c", type=int, default=0, help="Kamera indeksi")
-    parser.add_argument("--fullscreen", "-f", action="store_true", help="To'liq ekran rejimi")
+    parser.add_argument("--camera", type=int, default=0, help="Kamera indeksi (default: 0)")
+    parser.add_argument("--fullscreen", action="store_true", help="To'liq ekran rejimi")
     args = parser.parse_args()
 
-    app = QApplication(sys.argv)
+    # PyQt6 import
+    try:
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtCore import Qt
+    except ImportError:
+        logger.error("PyQt6 o'rnatilmagan! pip install PyQt6")
+        sys.exit(1)
 
-    # Global dark theme
-    app.setStyleSheet("""
-        * {
-            font-family: 'Segoe UI', Arial, sans-serif;
-        }
-    """)
+    from ui.kiosk import KioskWindow
+
+    app = QApplication(sys.argv)
+    app.setApplicationName("EcoCoin")
 
     window = KioskWindow()
 
     if args.fullscreen:
         window.showFullScreen()
     else:
-        window.resize(900, 700)
-        window.show()
+        window.showMaximized()
 
     window.start(camera_index=args.camera)
-
-    print("\n🌿 EcoCoin Kiosk ishga tushdi!")
-    print("   F / F11 — To'liq ekran")
-    print("   ESC / Q — Chiqish\n")
-
     sys.exit(app.exec())
 
 

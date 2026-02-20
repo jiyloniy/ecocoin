@@ -1,15 +1,23 @@
-opencv-python
-numpy
-pillow
-qrcode
-torch
-torchvision
-ultralytics
-PyQt6
+# ─── EcoCoin — Asosiy kutubxonalar ───
+# Core dependencies (barcha platformalar uchun)
+opencv-python>=4.8.0
+numpy>=1.24.0
+Pillow>=10.0.0
+qrcode[pil]>=7.4
+PyQt6>=6.5.0
 
-# Raspberry Pi CSI kamera uchun (ixtiyoriy):
-# 1-usul: picamera2 (agar ishlasa):
-#   sudo apt install python3-picamera2
-# 2-usul: libcamera (qo'shimcha kutubxona kerak EMAS, RPi OS da tayyor)
-# 3-usul: V4L2 driver:
-#   sudo modprobe bcm2835-v4l2
+# ─── Raspberry Pi (ARM) uchun — ONNX Runtime ───
+# RPi 3B+ da torch/ultralytics ISHLAMAYDI ("Illegal instruction")
+# Shuning uchun ONNX Runtime ishlatiladi:
+onnxruntime>=1.15.0
+
+# ─── PC (x86) uchun — ixtiyoriy ───
+# Agar PC da ishlatsangiz va .pt model ishlatmoqchi bo'lsangiz:
+# pip install ultralytics torch torchvision
+# ultralytics>=8.0.0
+# torch>=2.0.0
+# torchvision>=0.15.0
+
+# ─── Raspberry Pi CSI kamera (ixtiyoriy) ───
+# picamera2 faqat RPi da ishlaydi, libcamera backend ham mavjud:
+# pip install picamera2  (yoki libcamera-vid subprocess ishlatiladi)
