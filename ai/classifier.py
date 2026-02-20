@@ -9,14 +9,7 @@ import numpy as np
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
-
-try:
-    from ultralytics import YOLO
-except ImportError:
-    raise ImportError(
-        "ultralytics kutubxonasi o'rnatilmagan. "
-        "O'rnatish: pip install ultralytics"
-    )
+from ultralytics import YOLO
 
 from ai.config import (
     MODEL_NAME,
