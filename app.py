@@ -1,12 +1,4 @@
-"""
-EcoCoin — Kiosk UI rejimini ishga tushirish.
-Launches the full-screen kiosk with camera, mascot, and coin rewards.
 
-Foydalanish / Usage:
-    python app.py
-    python app.py --camera 1
-    python app.py --fullscreen
-"""
 
 import sys
 import argparse
